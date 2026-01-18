@@ -1,0 +1,9 @@
+Traceback (most recent call last):
+  File "/data/share/lijiang/250010178/250010178/debug_tmp_6*6for4/train.py", line 175, in <module>
+    trainer.run()
+  File "/data/share/lijiang/250010178/250010178/debug_tmp_6*6for4/train.py", line 124, in run
+    winner, play_data, game_len = self.self_play(mcts)
+  File "/data/share/lijiang/250010178/250010178/debug_tmp_6*6for4/train.py", line 69, in self_play
+    move = np.random.choice(acts, p=probs)
+  File "numpy/random/mtrand.pyx", line 987, in numpy.random.mtrand.RandomState.choice
+ValueError: 'a' and 'p' must have same size

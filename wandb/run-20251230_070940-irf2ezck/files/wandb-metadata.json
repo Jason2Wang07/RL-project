@@ -1,0 +1,43 @@
+{
+  "os":  "Linux-5.14.0-284.25.1.el9_2.x86_64-x86_64-with-glibc2.35",
+  "python":  "CPython 3.10.19",
+  "startedAt":  "2025-12-30T07:09:40.666365Z",
+  "program":  "/data/share/lijiang/250010178/250010178/debug_tmp_6*6for4/train.py",
+  "codePath":  "train.py",
+  "codePathLocal":  "train.py",
+  "email":  "zhang_zhaowei@whu.edu.cn",
+  "root":  "/data/share/lijiang/250010178/250010178/debug_tmp_6*6for4",
+  "host":  "pt-c4a8fc14f4024430bbd7ef0c83f65a2f-worker-0",
+  "executable":  "/root/miniconda3/envs/alphazero/bin/python",
+  "cpu_count":  96,
+  "cpu_count_logical":  192,
+  "gpu":  "NVIDIA H100 80GB HBM3",
+  "gpu_count":  2,
+  "disk":  {
+    "/":  {
+      "total":  "15032385536000",
+      "used":  "81920"
+    }
+  },
+  "memory":  {
+    "total":  "2159555387392"
+  },
+  "gpu_nvidia":  [
+    {
+      "name":  "NVIDIA H100 80GB HBM3",
+      "memoryTotal":  "85520809984",
+      "cudaCores":  16896,
+      "architecture":  "Hopper",
+      "uuid":  "GPU-784c10a2-680c-0558-2d19-4fdb00356263"
+    },
+    {
+      "name":  "NVIDIA H100 80GB HBM3",
+      "memoryTotal":  "85520809984",
+      "cudaCores":  16896,
+      "architecture":  "Hopper",
+      "uuid":  "GPU-30608c57-485b-37d3-3cee-ee0b7a4efc23"
+    }
+  ],
+  "cudaVersion":  "12.4",
+  "writerId":  "knm8son0ok6taxbdfp497bquz4a70s23"
+}

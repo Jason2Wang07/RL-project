@@ -1,0 +1,61 @@
+_wandb:
+    value:
+        cli_version: 0.23.1
+        e:
+            krg9zcw837g1cp2ymgcfyfo5phswvqnb:
+                codePath: train.py
+                codePathLocal: train.py
+                cpu_count: 96
+                cpu_count_logical: 192
+                cudaVersion: "12.4"
+                disk:
+                    /:
+                        total: "15032385536000"
+                        used: "81920"
+                email: aysdwjx@163.com
+                executable: /root/miniconda3/envs/alphazero/bin/python
+                gpu: NVIDIA H100 80GB HBM3
+                gpu_count: 2
+                gpu_nvidia:
+                    - architecture: Hopper
+                      cudaCores: 16896
+                      memoryTotal: "85520809984"
+                      name: NVIDIA H100 80GB HBM3
+                      uuid: GPU-bb84a40e-12fc-bc2b-b217-f1c06b12cd90
+                    - architecture: Hopper
+                      cudaCores: 16896
+                      memoryTotal: "85520809984"
+                      name: NVIDIA H100 80GB HBM3
+                      uuid: GPU-f517e76c-403d-80d6-0a0d-060bbdb7de96
+                host: pt-d1b853bb84b84f0f8a43cd164dd75616-worker-0
+                memory:
+                    total: "2159555371008"
+                os: Linux-5.14.0-284.25.1.el9_2.x86_64-x86_64-with-glibc2.35
+                program: /data/share/lijiang/250010178/250010178/debug_tmp_6*6for4/train.py
+                python: CPython 3.10.19
+                root: /data/share/lijiang/250010178/250010178/debug_tmp_6*6for4
+                startedAt: "2025-12-30T07:41:12.304223Z"
+                writerId: krg9zcw837g1cp2ymgcfyfo5phswvqnb
+        m: []
+        python_version: 3.10.19
+        t:
+            "1":
+                - 1
+            "2":
+                - 1
+            "3":
+                - 16
+            "4": 3.10.19
+            "5": 0.23.1
+            "12": 0.23.1
+            "13": linux-x86_64
+batch_size:
+    value: 64
+board_size:
+    value: 6
+device:
+    value: cuda
+lr:
+    value: 0.002
+n_in_row:
+    value: 4
