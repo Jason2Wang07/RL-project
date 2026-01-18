@@ -101,12 +101,23 @@ def q_learning(env, num_episodes, discount_factor=1.0, alpha=0.5, epsilon=0.1, m
         # One step in the environment (with max_steps safety limit)
         for t in range(max_steps):
             #########################Implement your code here#########################
-            raise NotImplementedError("Not implemented")
             # step 1 : Take a step
+            action_probs = policy(state)  # epsilon-greedy behavior policy encourages exploration
+            action = np.random.choice(np.arange(len(action_probs)), p=action_probs)
+            next_state, reward, done, _ = env.step(action)
+            stats.episode_rewards[i_episode] += reward
+            stats.episode_lengths[i_episode] = t + 1  # track how long the episode lasted so far
 
             # step 2 : TD Update (with terminal handling)
+            best_next_action = np.argmax(Q[next_state])  # greedy action for bootstrap target
+            td_target = reward if done else reward + discount_factor * Q[next_state][best_next_action]
+            td_delta = td_target - Q[state][action]
+            Q[state][action] += alpha * td_delta
 
             # step 3 : Move to next state and handle episode end
+            if done:
+                break  # episode finished, exit the loop
+            state = next_state
 
             #########################Implement your code end#########################
     return Q, stats
@@ -131,12 +142,31 @@ def double_q_learning(env, num_episodes, discount_factor=1.0, alpha=0.5, epsilon
 
         for t in range(max_steps):
             #########################Implement your code here#########################       
-            raise NotImplementedError("Not implemented")
             # step 1 : Take a step using combined Q1+Q2 policy
+            action_probs = policy(state)  # epsilon-greedy over (Q1+Q2) drives exploration
+            action = np.random.choice(np.arange(len(action_probs)), p=action_probs)
+            next_state, reward, done, _ = env.step(action)
+            stats.episode_rewards[i_episode] += reward
+            stats.episode_lengths[i_episode] = t + 1
 
             # step 2 : Double Q-learning update
+            if np.random.rand() < 0.5:
+                # Update Q1 using next action selected by Q1 but evaluated by Q2
+                best_next_action = np.argmax(Q1[next_state])
+                td_target = reward if done else reward + discount_factor * Q2[next_state][best_next_action]
+                td_delta = td_target - Q1[state][action]
+                Q1[state][action] += alpha * td_delta
+            else:
+                # Update Q2 symmetrically (select via Q2, evaluate via Q1)
+                best_next_action = np.argmax(Q2[next_state])
+                td_target = reward if done else reward + discount_factor * Q1[next_state][best_next_action]
+                td_delta = td_target - Q2[state][action]
+                Q2[state][action] += alpha * td_delta
 
             # step 3 : Move to next state and handle episode end
+            if done:
+                break
+            state = next_state
             #########################Implement your code end#########################
                 
     return Q1, Q2, stats
@@ -144,9 +174,9 @@ def double_q_learning(env, num_episodes, discount_factor=1.0, alpha=0.5, epsilon
 
 if __name__ == '__main__':
     # Q-Learning
-    Q, stats = q_learning(env, 1000)
-    plotting.plot_episode_stats(stats, file_name='episode_stats_q_learning')
+    #Q, stats = q_learning(env, 10000)
+    #plotting.plot_episode_stats(stats, file_name='episode_stats_q_learning')
     
     # Double Q-Learning
-    # Q1, Q2, stats = double_q_learning(env, 1000)
-    # plotting.plot_episode_stats(stats, file_name='episode_stats_double_q_learning')
+     Q1, Q2, stats = double_q_learning(env, 10000)
+     plotting.plot_episode_stats(stats, file_name='episode_stats_double_q_learning')
