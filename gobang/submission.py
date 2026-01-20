@@ -61,7 +61,28 @@ class Actor(nn.Module):
         """
 
         # BEGIN YOUR CODE
-        raise NotImplementedError("Not Implemented!")
+        hidden_channels = 64
+        mid_channels = 96
+
+        # BatchNorm 稳定训练
+        self.conv_blocks = nn.Sequential(
+            nn.Conv2d(1, hidden_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(hidden_channels),
+            nn.ReLU(inplace=False),
+            nn.Conv2d(hidden_channels, mid_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(mid_channels),
+            nn.ReLU(inplace=False),
+            nn.Conv2d(mid_channels, hidden_channels, kernel_size=1),
+            nn.ReLU(inplace=False),
+        )
+
+        # 全连接头负责将棋盘级表征映射到 N^2 行为空间
+        self.policy_head = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(hidden_channels * board_size * board_size, 256),
+            nn.ReLU(inplace=False),
+            nn.Linear(256, board_size ** 2),
+        )
         # END YOUR CODE
 
         # Define your optimizer here, which is responsible for calculating the gradients and performing optimizations.
@@ -97,7 +118,20 @@ class Actor(nn.Module):
         # ****************************************
 
         # BEGIN YOUR CODE
-        raise NotImplementedError("Not Implemented!")
+        state_tensor = output
+        features = self.conv_blocks(state_tensor)
+        logits = self.policy_head(features)
+
+        # 根据输入状态动态屏蔽非法动作（已有棋子的位置）
+        legal_mask = (state_tensor.view(state_tensor.size(0), -1) == 0).to(torch.float32)
+        stabilized_logits = logits - logits.max(dim=-1, keepdim=True)[0]
+        masked_logits = torch.exp(stabilized_logits) * legal_mask
+        denom = masked_logits.sum(dim=-1, keepdim=True)
+
+        # 若棋盘已满导致 denom=0，则回退为均匀分布防止出现 NaN
+        uniform_policy = torch.ones_like(masked_logits) / masked_logits.shape[-1]
+        normalized_policy = masked_logits / (denom + 1e-8)
+        output = torch.where(denom > 0, normalized_policy, uniform_policy)
         # END YOUR CODE
         return output
 
@@ -130,7 +164,26 @@ class Critic(nn.Module):
         # process.
 
         # BEGIN YOUR CODE
-        raise NotImplementedError("Not Implemented!")
+        critic_channels = 64
+        critic_mid = 128
+
+        # 卷积编码器：复用棋盘的局部结构先验，提取长/短连子的空间模式
+        self.conv_blocks = nn.Sequential(
+            nn.Conv2d(1, critic_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(critic_channels),
+            nn.ReLU(inplace=False),
+            nn.Conv2d(critic_channels, critic_mid, kernel_size=3, padding=1),
+            nn.BatchNorm2d(critic_mid),
+            nn.ReLU(inplace=False),
+        )
+
+        # 动作价值头：将全局特征映射为 N^2 个动作对应的 Q(s,a)
+        self.q_head = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(critic_mid * board_size * board_size, 256),
+            nn.ReLU(inplace=False),
+            nn.Linear(256, board_size ** 2),
+        )
         # END YOUR CODE
 
         # Define your optimizer here, which is responsible for calculating the gradients and performing optimizations.
@@ -138,14 +191,23 @@ class Critic(nn.Module):
         self.optimizer = torch.optim.Adam(params=self.parameters(), lr=lr)
 
     def forward(self, x: np.ndarray, action: np.ndarray):
-        indices = torch.tensor([_position_to_index(self.board_size, x, y) for x, y in action]).to(device)
+        indices = torch.tensor([
+            _position_to_index(self.board_size, int(x), int(y)) for x, y in action
+        ], dtype=torch.long, device=device)
         if len(x.shape) == 2:
             output = torch.tensor(x).to(device).to(torch.float32).unsqueeze(0).unsqueeze(0)
         else:
             output = torch.tensor(x).to(device).to(torch.float32)
 
         # BEGIN YOUR CODE
-        raise NotImplementedError("Not Implemented!")
+        state_tensor = output
+        features = self.conv_blocks(state_tensor)
+        q_map = self.q_head(features)
+        q_map = q_map.view(q_map.size(0), -1)
+
+        # 通过索引提取指定动作的 Q 值，保持梯度可回传
+        gathered_q = torch.gather(q_map, 1, indices.unsqueeze(-1)).squeeze(-1)
+        output = gathered_q
         # END YOUR CODE
 
         return output
@@ -170,9 +232,8 @@ class GobangModel(nn.Module):
         """
 
         # BEGIN YOUR CODE
-        # self.actor = Actor(board_size=board_size, ...)
-        # self.critic = Critic(board_size=board_size, ...)
-        raise NotImplementedError("Not Implemented!")
+        self.actor = Actor(board_size=board_size)
+        self.critic = Critic(board_size=board_size)
         # END YOUR CODE
 
         self.to(device)
@@ -181,7 +242,10 @@ class GobangModel(nn.Module):
         """
         Return the policy vector π(s) and Q-values Q(s, a) given state "x" and action "action".
         """
-        return self.actor(x), self.critic(x, action)
+
+        policy = self.actor(x)
+        q_values = self.critic(x, action)
+        return policy, q_values
 
     def optimize(self, policy, qs, actions, rewards, next_qs, gamma, eps=1e-6):
         """
@@ -193,17 +257,25 @@ class GobangModel(nn.Module):
         Identify and debug all errors.
         """
 
-        targets = rewards + gamma * next_qs
-        critic_loss = nn.MSELoss()(targets, qs)
-        indices = torch.tensor([_position_to_index(self.board_size, x, y) for x, y in actions]).to(device)
-        aimed_policy = policy[torch.arange(len(indices)), indices]
-        actor_loss = -torch.mean(torch.log(aimed_policy + eps) * qs.clone().detach())
+        # detach() 用于阻断梯度传递，防止 next_qs 对 critic 造成影响
+        targets = rewards + gamma * next_qs.detach()
+        critic_loss = nn.MSELoss()(qs, targets)
 
+        # 将 (x, y) 坐标映射到扁平索引
+        actions_long = actions.to(torch.long)
+        indices = (actions_long[:, 0] * self.board_size + actions_long[:, 1]).to(device)
+        batch_indices = torch.arange(indices.size(0), device=policy.device)
+        aimed_policy = policy[batch_indices, indices]
+        actor_loss = -torch.mean(torch.log(aimed_policy + eps) * qs.detach())
+
+        # 先清梯度再反传，随后 step 
         self.actor.optimizer.zero_grad()
         actor_loss.backward()
+        self.actor.optimizer.step()
 
         self.critic.optimizer.zero_grad()
         critic_loss.backward()
+        self.critic.optimizer.step()
         return actor_loss, critic_loss
 
 
