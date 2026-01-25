@@ -1,20 +1,28 @@
 import os
 import random
+import re
 import matplotlib.pyplot as plt
 import numpy as np
-import tkinter as tk
 import copy
-from typing import *
+from typing import List, Tuple, Union, Optional, Any
 from tqdm import tqdm
 import torch
 
-# 可选导入 wandb，如果未安装则跳过
 try:
     import wandb
     WANDB_AVAILABLE = True
 except ImportError:
     WANDB_AVAILABLE = False
-    print("Warning: wandb not installed. Install with 'pip install wandb' to enable experiment tracking.")
+
+try:
+    from numba import njit
+    NUMBA_AVAILABLE = True
+except ImportError:
+    print("Warning: Numba not found. Installing numba (pip install numba) is HIGHLY recommended for H100 training.")
+    NUMBA_AVAILABLE = False
+    def njit(*args, **kwargs):
+        def decorator(func): return func
+        return decorator
 
 if torch.backends.mps.is_available():
     device = torch.device("mps")
@@ -25,336 +33,333 @@ else:
 print(f"Current device is {device}.")
 
 
-class UtilGobang:
-    def __init__(self, board_size, bound):
-        self.board_size, self.bound = board_size, bound
-        self.board = np.zeros((board_size, board_size))
-        self.window, self.canvas, self.cell_size = None, None, None
-        self.action_space = [(i, j) for i in range(board_size) for j in range(board_size)]
-        self.model, self.opponent = None, None
+@njit(fastmath=True)
+def check_win_numba(board, color):
+    h, w = board.shape
+    for i in range(h):
+        for j in range(w - 4):
+            if board[i, j] == color and board[i, j+1] == color and \
+               board[i, j+2] == color and board[i, j+3] == color and board[i, j+4] == color:
+                return True
+    for i in range(h - 4):
+        for j in range(w):
+            if board[i, j] == color and board[i+1, j] == color and \
+               board[i+2, j] == color and board[i+3, j] == color and board[i+4, j] == color:
+                return True
+    for i in range(h - 4):
+        for j in range(w - 4):
+            if board[i, j] == color and board[i+1, j+1] == color and \
+               board[i+2, j+2] == color and board[i+3, j+3] == color and board[i+4, j+4] == color:
+                return True
+    for i in range(4, h):
+        for j in range(w - 4):
+            if board[i, j] == color and board[i-1, j+1] == color and \
+               board[i-2, j+2] == color and board[i-3, j+3] == color and board[i-4, j+4] == color:
+                return True
+    return False
 
-    def restart(self):
-        self.board = np.zeros((self.board_size, self.board_size))
-        self.action_space = [(i, j) for i in range(self.board_size) for j in range(self.board_size)]
+@njit
+def find_winning_move_numba(board, color, empty_indices):
 
-    def draw_board(self, random_response, model, opponent):
-        opponent_name = "random noise" if random_response else "training model itself"
-        print(f"Playing process is being visualized with opponent {opponent_name}.")
-        self.model, self.opponent = model, opponent
-        self.window = tk.Tk()
-        self.window.title("Gobang Board")
-        self.canvas = tk.Canvas(self.window, width=400, height=400)
-        self.canvas.pack()
-        self.cell_size = 400 // self.board_size
-        self.visualize_board(random_response)
-        self.window.mainloop()
-
-    def visualize_board(self, random_response):
-        self.canvas.delete("all")
-        color, end_up_gaming = self.update_board(random_response=random_response, learning=False)
-        text = "Black wins." if color == 1 else "White wins." if color == 2 else "Tie." if color == 0 else None
-        if text is not None:
-            message = tk.Message(self.window, text=text, width=100)
-            message.pack()
-        for i in range(self.board_size):
-            for j in range(self.board_size):
-                x1 = i * self.cell_size
-                y1 = j * self.cell_size
-                x2 = x1 + self.cell_size
-                y2 = y1 + self.cell_size
-                if self.board[i][j] == 1:
-                    self.canvas.create_oval(x1, y1, x2, y2, fill="black")
-                elif self.board[i][j] == 2:
-                    self.canvas.create_oval(x1, y1, x2, y2, fill="white")
-        if end_up_gaming is True:
-            print("Game ended.")
-        else:
-            self.window.after(1000, lambda: self.visualize_board(random_response))
-
-    def judge_legal_position(self, x, y) -> bool:
-        return 0 <= x < self.board_size and 0 <= y < self.board_size
-
-    def count_max_connections_for_single_color(self, state, color) -> int:
-        directions = [(1, 1), (1, 0), (0, 1), (1, -1)]
-        max_connections = 0
-        for i in range(self.board_size):
-            for j in range(self.board_size):
-                for direction_x, direction_y in directions:
-                    current_pos_x, current_pos_y = i, j
-                    current_connections = 0
-                    while self.judge_legal_position(current_pos_x, current_pos_y):
-                        if state[current_pos_x][current_pos_y] == color:
-                            current_connections += 1
-                        else:
-                            break
-                        current_pos_x += direction_x
-                        current_pos_y += direction_y
-                    max_connections = max(current_connections, max_connections)
-        return max_connections
-
-    def count_max_connections(self, state) -> Tuple[int, int]:
-        return (self.count_max_connections_for_single_color(state, 1),
-                self.count_max_connections_for_single_color(state, 2))
-
-    @staticmethod
-    def array_to_hashable(array):
-        return tuple([tuple(r) for r in array])
-
-    @staticmethod
-    def hashable_to_array(hash_key):
-        return np.array([list(r) for r in hash_key])
-
-    def position_to_index(self, x: int, y: int) -> int:
-        return x * self.board_size + y
-
-    def index_to_position(self, index: int) -> Tuple[int, int]:
-        x = index // self.board_size
-        y = index - x * self.board_size
-        return x, y
-
-    @staticmethod
-    def identity_transform(state: np.array):
-        return np.array([
-            [1 if r == 2 else 2 if r == 1 else 0 for r in row] for row in state
-        ])
-
-    def sample_action_and_response(self, random_response):
-        raise NotImplementedError("Not Implemented!")
-
-    def get_connection_and_reward(self, action, response):
-        raise NotImplementedError("Not Implemented!")
-
-    def get_next_state(self, action, response):
-        raise NotImplementedError("Not Implemented!")
-
-    def update_board(self, random_response, learning: bool = True, attempt: int = 8) -> Tuple[int, bool]:
-        action_space = copy.deepcopy(self.action_space)
-        (next_state_free_of_response, next_state,
-         current_black_connection, current_white_connection,
-         next_black_connection, next_white_connection, reward) = [None, None, None, None, None, None, None]
-        for _ in range(attempt if learning else 1):
-            self.action_space = copy.deepcopy(action_space)
-            action, response = self.sample_action_and_response(random_response)
-            (current_black_connection, current_white_connection,
-             next_black_connection, next_white_connection, reward) = self.get_connection_and_reward(action, response)
-            next_state = self.get_next_state(action, response)
-            next_state_free_of_response = self.get_next_state(action, None)
-        self.board = next_state_free_of_response if next_black_connection >= self.bound else next_state
-        return ((1, True) if next_black_connection >= self.bound else
-                (2, True) if next_white_connection >= self.bound else
-                (0, True) if len(self.action_space) == 0 else
-                (-1, False))
-
-    def evaluate_agent_performance(self, random_response, model, opponent, episodes=1000):
-        opponent_name = "random noise" if random_response else "training model itself"
-        print(f"Start evaluating with opponent {opponent_name}.")
-        self.model, self.opponent = model, opponent
-        black_wins, white_wins, ties = 0, 0, 0
-        for _ in tqdm(range(episodes)):
-            self.restart()
-            while True:
-                color, end_up_gaming = self.update_board(learning=False, random_response=random_response)
-                black_wins, white_wins, ties = ((black_wins, white_wins, ties) if end_up_gaming is False else
-                                                (black_wins, white_wins, ties + 1) if color == 0 else
-                                                (black_wins + 1, white_wins, ties) if color == 1 else
-                                                (black_wins, white_wins + 1, ties))
-                if end_up_gaming:
-                    print(f"Black wins: {black_wins}, white wins: {white_wins}, and ties: {ties}.")
-                    print(
-                        f"The evaluated winning probability for the black pieces is "
-                        f"{black_wins / (black_wins + white_wins + ties)}."
-                    )
-                    break
-        self.restart()
-        print(f"Evaluation finished. Black wins: {black_wins}, white wins: {white_wins}, and ties: {ties}.")
-        print(
-            f"The evaluated winning probability for the black pieces is "
-            f"{black_wins / (black_wins + white_wins + ties)}."
-        )
+    for idx in empty_indices:
+        r = idx // 12
+        c = idx % 12
+        board[r, c] = color
+        if check_win_numba(board, color):
+            board[r, c] = 0
+            return idx
+        board[r, c] = 0
+    return -1
 
 
-class Gobang(UtilGobang):
-
-    def __init__(self, board_size, bound, training):
-        super().__init__(board_size=board_size, bound=bound)
-        self.training = training
-        self.model, self.opponent = None, None
-
-    def get_next_state(self, action: Tuple[int, int, int], response: Tuple[int, int, int]) -> np.array:
-        black, xb, yb = action
-        next_state = copy.deepcopy(self.board)
-        next_state[xb][yb] = black
-
-        if response is not None:
-            white, x_white, y_white = response
-            next_state[x_white][y_white] = white
-        return next_state
-
-    def sample_response(self, random_response, x, y) -> Union[Tuple[int, int, int], None]:
-        if self.action_space:
-            state = self.identity_transform(self.board)
-            state[x][y] = 2
-            policy = self.opponent.actor(state)[0].detach().cpu().numpy()
-            if random_response:
-                policy = [1 if p > 0 else 0 for p in policy]
-                policy = [p / sum(policy) for p in policy]
-            n = state.shape[0]
-            action = np.random.choice(range(self.board_size ** 2), p=policy)
-            x_, y_ = _index_to_position(n, action)
-            self.action_space.remove((x_, y_))
-            return 2, x_, y_
-        else:
-            return None
-
-    def get_connection_and_reward(self, action: Tuple[int, int, int],
-                                  response: Tuple[int, int, int]) -> Tuple[int, int, int, int, float]:
-        next_state = self.get_next_state(action, response)
-        black_1, white_1 = self.count_max_connections(self.board)
-        black_2, white_2 = self.count_max_connections(next_state)
-        reward = (black_2 ** 2 - white_2 ** 2) - (black_1 ** 2 - white_1 ** 2)
-        return black_1, white_1, black_2, white_2, reward
-
-    def sample_action_and_response(self, random_response) -> Tuple[Tuple[int, int, int], Tuple[int, int, int]]:
-        state = self.board
-        policy = self.model.actor(state)[0].detach().cpu().numpy()
-        n = state.shape[0]
-        action = np.random.choice(range(self.board_size ** 2), p=policy)
-        x, y = _index_to_position(n, action)
-        self.action_space.remove((x, y))
-        return (1, x, y), self.sample_response(random_response, x, y)
-
-
-def _position_to_index(board_size, x: int, y: int) -> int:
-    return int(x * board_size + y)
-
-
-def _index_to_position(board_size, index: int) -> Tuple[int, int]:
-    x = index // board_size
-    y = index - x * board_size
-    return x, y
-
-
-def _sample_response(chessboard, actor, x, y):
-    state = chessboard.identity_transform(chessboard.board)
-    state[x][y] = 2
-    policy = actor(state)[0].detach().cpu().numpy()
-    n = state.shape[0]
-    action = np.random.choice(range(chessboard.board_size ** 2), p=policy)
-    x_, y_ = _index_to_position(n, action)
-    chessboard.action_space.remove((x_, y_))
-    return 2, x_, y_
-
-
-def track_loss(actor_records, critic_records, entropy):
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 20))
-
-    ax1.plot(actor_records, label='Actor Loss', color='green')
-    ax1.set_title('Actor Loss Tracking')
-    ax1.set_xlabel('Episode')
-    ax1.set_ylabel('Loss')
-    ax1.legend()
-    ax1.grid(True)
-
-    ax2.plot(critic_records, label='Critic Loss', color='red')
-    ax2.set_title('Critic Loss Tracking')
-    ax2.set_xlabel('Episode')
-    ax2.set_ylabel('Loss')
-    ax2.legend()
-    ax2.grid(True)
-
-    ax3.plot(entropy, label='Policy Entropy', color='blue')
-    ax3.set_title('Policy Entropy Tracking')
-    ax3.set_xlabel('Episode')
-    ax3.set_ylabel('Entropy')
-    ax3.legend()
-    ax3.grid(True)
-    ax3.figure.savefig("loss_tracker.png")
-    plt.close()
-
-
-def _sample_action_and_response(chessboard, actor, state):
-    policy = actor(state)[0].detach().cpu().numpy()
-    n = state.shape[0]
-    action = np.random.choice(range(actor.board_size ** 2), p=policy)
-    x, y = _index_to_position(n, action)
-    response = None if len(np.nonzero(state == 0)[0]) <= 1 else _sample_response(chessboard, actor, x, y)
-    return (1, x, y), response
-
-
-def _get_next_state(state, action, response):
-    black, xb, yb = action
-    next_state = copy.deepcopy(state)
-    next_state[xb][yb] = black
-    if response is not None:
-        white, x_white, y_white = response
-        next_state[x_white][y_white] = white
-    return next_state
-
-
-def train_model(model, num_episodes=1000, checkpoint=1000, gamma=0.5):
-    chess_board = Gobang(board_size=model.board_size, bound=model.bound, training=True)
-    actor_records, critic_records, entropy_records = [], [], []
-    for _ in range(num_episodes):
-        states, actions, rewards, next_states = [[] for _ in range(4)]
-        chess_board.restart()
-        for count in range(chess_board.board_size ** 2 // 2 + 1):
-            state = copy.deepcopy(chess_board.board)
-            action, response = _sample_action_and_response(chess_board, model.actor, state)
-            next_state = _get_next_state(state, action, response)
-            black_1, white_1, black_2, white_2, reward = chess_board.get_connection_and_reward(action=action,
-                                                                                               response=response)
-
-            stop = True if (black_2 >= model.bound or white_2 >= model.bound
-                            or len(np.nonzero(next_state == 0)[0]) == 0) else False
-
-            if black_2 >= model.bound:
-                next_state = _get_next_state(state, action, None)
-                white_2 = white_1
-                reward = (black_2 ** 2 - white_2 ** 2) - (black_1 ** 2 - white_1 ** 2)
-
-            states.append([state])
-            actions.append([action[1], action[2]])
-            rewards.append(reward)
-            chess_board.board = next_state
-            if stop:
-                break
-
-        states = torch.tensor(states).to(torch.float32).to(device)
-        rewards = torch.tensor(rewards).to(torch.float32).to(device)
-        actions = torch.tensor(actions).to(torch.float32).to(device)
-
-        policy, qs = model(states, actions)
-        next_qs = qs[1:]
-        next_qs = torch.cat((next_qs, torch.tensor([0]).to(device)))
-
-        entropy = -float(torch.mean(torch.sum(policy * torch.log(policy + 1e-6), dim=1)))
-        entropy_records.append(entropy)
-
-        actor_loss, critic_loss = model.optimize(policy, qs, actions, rewards, next_qs, gamma)
-        actor_records.append(float(actor_loss))
-        critic_records.append(float(critic_loss))
+class BatchGobang:
+    def __init__(self, num_envs=64, board_size=12):
+        self.num_envs = num_envs
+        self.board_size = board_size
+        self.boards = np.zeros((num_envs, board_size, board_size), dtype=np.int8)
+        self.current_players = np.ones(num_envs, dtype=np.int8) 
+        self.dones = np.zeros(num_envs, dtype=bool)
+        self.winners = np.zeros(num_envs, dtype=np.int8)
         
-        if WANDB_AVAILABLE:
-            wandb.log({
-                "episode": _,
-                "actor_loss": float(actor_loss),
-                "critic_loss": float(critic_loss),
-                "entropy": entropy,
-                "actor_loss_neg": -float(actor_loss),
+        self.histories = [[] for _ in range(num_envs)]
+
+    def reset_specific(self, env_indices):
+        for i in env_indices:
+            self.boards[i].fill(0)
+            self.current_players[i] = 1
+            self.dones[i] = False
+            self.winners[i] = 0
+            self.histories[i] = []
+
+    def get_states(self):
+
+        batch_input = self.boards.copy()
+
+        white_turn = (self.current_players == 2)
+
+        if np.any(white_turn):
+            batch_input[white_turn] = np.where(
+                batch_input[white_turn] == 0, 0, 
+                3 - batch_input[white_turn]
+            )
+            
+        return batch_input
+
+    def step(self, actions):
+
+        for i in range(self.num_envs):
+            if self.dones[i]: continue
+            
+            act = actions[i]
+            r, c = act // self.board_size, act % self.board_size
+            player = self.current_players[i]
+
+            view_board = self.boards[i].copy()
+            if player == 2:
+                view_board = np.where(view_board==1, 2, np.where(view_board==2, 1, 0))
+            
+            self.histories[i].append({
+                'state': view_board,
+                'action': act,
+                'player': player
             })
+
+            self.boards[i, r, c] = player
+
+            if check_win_numba(self.boards[i], player):
+                self.dones[i] = True
+                self.winners[i] = player
+            elif np.all(self.boards[i] != 0): 
+                self.dones[i] = True
+                self.winners[i] = 0 
+            
+            self.current_players[i] = 3 - player
+
+def augment_data(states, actions, targets, board_size=12):
+
+    aug_s, aug_a, aug_t = [], [], []
+
+    states_np = np.array(states)
+    
+    for i in range(len(states)):
+        s = states_np[i]
+        a = actions[i]
+        t = targets[i]
         
-        print(
-            f"Episode {_} / {num_episodes}: Actor Loss {-actor_loss}, Critic Loss "
-            f"{critic_loss}.")
-        if (_ + 1) % 10 == 0:
-            try:
-                track_loss(actor_records, critic_records, entropy_records)
-            except Exception as e:
-                print(e)
-        if (_ + 1) % checkpoint == 0:
-            os.makedirs("checkpoints", exist_ok=True)
-            torch.save(model.state_dict(), f"checkpoints/model_{_}.pth")
+        x, y = a // board_size, a % board_size
+        
+        for k in range(4):
+            rot_s = np.rot90(s, k)
+
+            dummy = np.zeros((board_size, board_size))
+            dummy[x, y] = 1
+            rot_dummy = np.rot90(dummy, k)
+            rx, ry = np.where(rot_dummy == 1)
+
+            ra = rx[0] * board_size + ry[0]
+            
+            aug_s.append(rot_s.copy())
+            aug_a.append(ra)
+            aug_t.append(t)
+            
+            flip_s = np.fliplr(rot_s)
+            flip_dummy = np.fliplr(rot_dummy)
+            fx, fy = np.where(flip_dummy == 1)
+
+            fa = fx[0] * board_size + fy[0]
+            
+            aug_s.append(flip_s.copy())
+            aug_a.append(fa)
+            aug_t.append(t)
+            
+    return aug_s, aug_a, aug_t
 
 
-__all__ = ['_position_to_index', '_index_to_position', '_sample_response', 'train_model',
-           '_sample_action_and_response', '_get_next_state', 'UtilGobang', 'Gobang', 'device']
+def train_model(model, num_episodes=50000, checkpoint=1000, resume=None, gamma=0.99):
+    print("🚀 Starting High-Performance Batch Training (H100 Optimized)...")
+    
+    NUM_ENVS = 128          
+    BATCH_SIZE = 4096       
+    BUFFER_CAPACITY = 20000 
+    EPSILON = 0.2           
+    
+    envs = BatchGobang(num_envs=NUM_ENVS, board_size=model.board_size)
+    
+    start_ep = 0
+    if resume and os.path.isfile(resume):
+        print(f"Loading checkpoint {resume}...")
+        try:
+            model.load_state_dict(torch.load(resume))
+            import re
+            match = re.search(r'model_(\d+).pth', resume)
+            if match: start_ep = int(match.group(1)) + 1
+        except Exception as e:
+            print(f"Resume failed: {e}")
+
+    buffer_states, buffer_actions, buffer_targets = [], [], []
+    
+    recent_game_steps = []
+    
+    pbar = tqdm(range(start_ep, num_episodes))
+    
+    games_finished = start_ep 
+    
+    try:
+        while games_finished < num_episodes:
+            
+            states = envs.get_states() 
+            
+            states_tensor = torch.tensor(states, dtype=torch.float32).unsqueeze(1).to(device)
+            with torch.no_grad():
+                probs, _ = model(states_tensor) 
+                probs = probs.cpu().numpy()
+                
+            actions = np.zeros(NUM_ENVS, dtype=np.int64)
+            
+            for i in range(NUM_ENVS):
+                if envs.dones[i]: continue
+                
+                board = envs.boards[i]
+                player = envs.current_players[i]
+                opponent = 3 - player
+
+                empty_indices = np.where(board.flatten() == 0)[0]
+                if len(empty_indices) == 0:
+                    envs.dones[i] = True
+                    continue
+
+                win_move = find_winning_move_numba(board, player, empty_indices)
+                if win_move != -1:
+                    actions[i] = win_move
+                    continue
+                    
+                block_move = find_winning_move_numba(board, opponent, empty_indices)
+                if block_move != -1:
+                    actions[i] = block_move
+                    continue
+                    
+                p = probs[i]
+                p_valid = p[empty_indices]
+                if p_valid.sum() > 0:
+                    p_valid /= p_valid.sum()
+
+                    if random.random() < EPSILON:
+                        move_idx = np.random.choice(len(empty_indices))
+                        actions[i] = empty_indices[move_idx]
+                    else:
+                        move_idx = np.random.choice(len(empty_indices), p=p_valid)
+                        actions[i] = empty_indices[move_idx]
+                else:
+                    actions[i] = np.random.choice(empty_indices)
+
+            envs.step(actions)
+
+            finished_indices = np.where(envs.dones)[0]
+
+            prev_games = games_finished
+            
+            for idx in finished_indices:
+                games_finished += 1
+                winner = envs.winners[idx]
+                hist = envs.histories[idx]
+
+                recent_game_steps.append(len(hist))
+
+                for step in hist:
+                    p = step['player']
+                    target = 0.0
+                    if winner == p: target = 1.0
+                    elif winner != 0: target = -1.0
+                    
+                    buffer_states.append(step['state'])
+                    buffer_actions.append(step['action'])
+                    buffer_targets.append(target)
+
+                if games_finished % 10 == 0:
+                    pbar.update(10)
+                    EPSILON = max(0.05, EPSILON * 0.9999)
+
+            if len(finished_indices) > 0:
+                envs.reset_specific(finished_indices)
+                
+                if games_finished // checkpoint > prev_games // checkpoint:
+                     print(f"\nCheckpoint triggered at {games_finished} episodes.")
+                     os.makedirs("checkpoints", exist_ok=True)
+                     torch.save(model.state_dict(), f"checkpoints/model_{games_finished}.pth")
+
+            if len(buffer_states) >= BUFFER_CAPACITY:
+
+                aug_s, aug_a, aug_t = augment_data(buffer_states, buffer_actions, buffer_targets, model.board_size)
+
+                b_states = torch.tensor(np.array(aug_s), dtype=torch.float32).unsqueeze(1).to(device)
+                b_actions = torch.tensor(aug_a, dtype=torch.long).to(device)
+                b_targets = torch.tensor(aug_t, dtype=torch.float32).to(device)
+
+                indices = torch.randperm(len(b_states))
+                
+                model.train()
+                total_a_loss = 0
+                total_c_loss = 0
+                steps = 0
+
+                for start in range(0, len(b_states), BATCH_SIZE):
+                    end = start + BATCH_SIZE
+                    idx = indices[start:end]
+                    
+                    mini_s = b_states[idx]
+                    mini_a = b_actions[idx]
+                    mini_t = b_targets[idx]
+                    
+                    mini_probs, mini_qs = model(mini_s)
+
+                    a_l, c_l = model.optimize(mini_probs, mini_qs, mini_a, mini_t, None, gamma=0)
+                    
+                    total_a_loss += a_l
+                    total_c_loss += c_l
+                    steps += 1
+
+                avg_a = total_a_loss / steps
+                avg_c = total_c_loss / steps
+
+                avg_steps = sum(recent_game_steps) / len(recent_game_steps) if recent_game_steps else 0
+                
+                pbar.set_description(f"Loss A:{avg_a:.3f} C:{avg_c:.3f} Steps:{avg_steps:.1f} Eps:{EPSILON:.2f}")
+                
+                if WANDB_AVAILABLE:
+                    wandb.log({
+                        "episode": games_finished,
+                        "actor_loss": avg_a,
+                        "critic_loss": avg_c,
+                        "buffer_size": len(b_states),
+                        "avg_game_steps": avg_steps, 
+                        "epsilon": EPSILON           
+                    })
+
+                buffer_states, buffer_actions, buffer_targets = [], [], []
+                recent_game_steps = []
+
+    except KeyboardInterrupt:
+        print("\n\nTraining interrupted by user (Ctrl+C). Saving emergency checkpoint...")
+        os.makedirs("checkpoints", exist_ok=True)
+        torch.save(model.state_dict(), f"checkpoints/model_interrupt_{games_finished}.pth")
+        print(f"Saved to checkpoints/model_interrupt_{games_finished}.pth")
+        
+    except Exception as e:
+        print(f"\n\nTraining crashed: {e}")
+        os.makedirs("checkpoints", exist_ok=True)
+        torch.save(model.state_dict(), f"checkpoints/model_crash_{games_finished}.pth")
+        raise e
+
+    finally:
+        pbar.close()
+        if WANDB_AVAILABLE and wandb.run is not None:
+            wandb.finish()
+
+class Gobang:
+    def __init__(self, board_size, bound, training):
+        pass 
+
+def _position_to_index(board_size, x: int, y: int) -> int: return int(x * board_size + y)
+def _index_to_position(board_size, index: int) -> Tuple[int, int]: return index // board_size, index - (index // board_size) * board_size
+
+__all__ = ['_position_to_index', '_index_to_position', 'train_model', 'Gobang', 'device']
