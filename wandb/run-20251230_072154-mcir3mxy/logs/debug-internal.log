@@ -1,6 +1,0 @@
-{"time":"2025-12-30T07:21:54.333830099Z","level":"INFO","msg":"stream: starting","core version":"0.23.1"}
-{"time":"2025-12-30T07:21:55.156680741Z","level":"INFO","msg":"stream: created new stream","id":"mcir3mxy"}
-{"time":"2025-12-30T07:21:55.156994321Z","level":"INFO","msg":"handler: started","stream_id":"mcir3mxy"}
-{"time":"2025-12-30T07:21:55.160036482Z","level":"INFO","msg":"stream: started","id":"mcir3mxy"}
-{"time":"2025-12-30T07:21:55.160055484Z","level":"INFO","msg":"writer: started","stream_id":"mcir3mxy"}
-{"time":"2025-12-30T07:21:55.160059288Z","level":"INFO","msg":"sender: started","stream_id":"mcir3mxy"}
