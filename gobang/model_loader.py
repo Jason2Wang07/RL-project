@@ -3,21 +3,17 @@ from typing import *
 from utils import *
 import numpy as np
 import torch
+from submission import GobangModel
 
 board_size = 12
 bound = 5
 
 
-# Load models using functions 'get_model' without passing any extra
-# parameters, so that we can directly call get_model() in player.py and evaluator.py.
-
-
-def get_model():
-    # from submission import GobangModel
-    # model = GobangModel(board_size=board_size, bound=bound)
-    # model.load_state_dict(torch.load('model.pth'))
-    # return model
-    raise NotImplementedError("Not implemented!")
+def get_model(model_file="model.pth"):
+	model = GobangModel(board_size=board_size, bound=bound)
+	model.load_state_dict(torch.load(model_file))
+	model.to(device)
+	return model
 
 
 __all__ = ['get_model']
