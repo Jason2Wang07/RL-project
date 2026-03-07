@@ -22,3 +22,4 @@ if __name__ == "__main__":
     # loaded before the evaluation process.
     chess_board = Gobang(board_size=board_size, bound=bound, training=False)
     chess_board.draw_board(random_response=False, model=model, opponent=opponent)
+    # chess_board.draw_board(random_response=False, model=opponent, opponent=model)
